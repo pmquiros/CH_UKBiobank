@@ -1,4 +1,4 @@
-# CH_UKBiobank
+# Causes and consequences of clonal hematopoiesis in the UK Biobank
 
 This is the repository, in conjunction with [https://github.com/siddhartha-kar/clonal-hematopoiesis], for the manuscript entitled [Genome-wide analyses of 200,453 individuals yields new insights into the causes and consequences of clonal hematopoiesis](https://www.medrxiv.org/content/10.1101/2022.01.06.22268846v1)
 

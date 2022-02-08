@@ -1,0 +1,1281 @@
+---
+title: "Figures"
+author: "Pedro"
+date: "13/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r include=FALSE}
+options(stringsAsFactors = FALSE)
+library(tidyverse)
+options(dplyr.summarise.inform = FALSE)
+library(vroom)
+library(cowplot)
+library(here)
+library(openxlsx)
+library(survival)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(ggrepel)
+
+
+```
+
+##Load required functions
+
+```{r include=FALSE}
+source(here::here("src/fun/functions.R"))
+```
+
+
+## Load data
+
+```{r}
+ch_all <- vroom("output/tables/results_var_ch_all_allgenes_UKB")
+pheno1 <- vroom(here::here("data/processed/pheno_exomes_corrected"), guess_max = 10000)
+
+```
+
+## Prepare data
+
+```{r include=FALSE}
+ch_red <- ch_all %>%
+  select(eid, symbol, ref_allele, alt_allele, vaf, consequence, variant_class, p_mut, gene_function) %>%
+  mutate(clone = if_else(vaf >= 0.1, "large", "small")) 
+
+pheno_red <- pheno1 %>%
+  dplyr::select(eid = f.eid, sex = f.31.0.0, age = f.21003.0.0, ethnic = f.21000.0.0) %>%
+  mutate_if(is.integer, as.numeric, na.rm = TRUE) %>% 
+  mutate(CH = if_else(eid %in% ch_all$eid, "CH","Ctrl")) %>%
+  mutate(CH = factor(CH, levels = c("Ctrl", "CH"))) %>% 
+  left_join(ch_red, by="eid") %>% 
+  mutate(CH_large = case_when(clone == "large" ~ 1,
+                           CH == "Ctrl" ~ 0)) %>% 
+  mutate(CH_small = case_when(clone == "small" ~ 1,
+                           CH == "Ctrl" ~ 0)) %>% 
+  mutate(DNMT3A = case_when(symbol == "DNMT3A" ~ 1,
+                           CH == "Ctrl" ~ 0)) %>% 
+  mutate(TET2 = case_when(symbol == "TET2" ~ 1,
+                           CH == "Ctrl" ~ 0)) %>% 
+  mutate(ASXL1 = case_when(symbol == "ASXL1" ~ 1,
+                           CH == "Ctrl" ~ 0)) %>% 
+  mutate(JAK2 = case_when(symbol == "JAK2" ~ 1,
+                           CH == "Ctrl" ~ 0)) %>% 
+  mutate(SRSF2_SF3B1 = case_when(symbol %in% c("SF3B1", "SRSF2") ~ 1,
+                           CH == "Ctrl" ~ 0))
+
+```
+
+```{r include=FALSE}
+
+pheno_sexage <- pheno1 %>% select(eid=f.eid, sex=f.31.0.0, age=f.21003.0.0)
+
+ch_red_sexage <- left_join(ch_red, pheno_sexage, by=c("eid")) %>%
+  mutate(mutation_type = case_when(consequence == "frameshift_variant" ~ "Frameshift",
+                              consequence == "missense_variant" ~ "Missense",
+                              consequence == "stop_gained" ~ "Nonsense",
+                              consequence == "start_lost" ~ "Other",
+                              consequence == "stop_lost" ~ "Other",
+                              consequence == "splice_donor_variant" ~ "Splicing",
+                              consequence == "splice_acceptor_variant" ~ "Splicing",
+                              consequence == "inframe_insertion" ~ "Other",
+                              consequence == "inframe_deletion" ~ "Other"
+                         )) %>% 
+  mutate(mutation_type = factor(mutation_type, 
+                                levels = c("Missense", "Nonsense", "Frameshift", "Splicing", "Other"))) 
+
+mut_type_colors <- c("#4DAF4A", "#377EB8", "#E41A1C", "#984EA3",  "#FF7F00" )
+
+
+```
+
+
+```{r include=FALSE}
+ch_red_sexage_genes <- ch_red_sexage %>%
+  group_by(symbol) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(perc = round(100*n / sum(n),1)) %>%
+  arrange(-n)
+ch_red_sexage_genes
+top_genes <- ch_red_sexage_genes %>% top_n(10,n) %>% pull(symbol) 
+
+```
+
+
+
+## FIGURE 1
+
+### A
+```{r}
+waterplot <- waterfall_plot(ch_red_sexage, top = 10, log=T)
+waterplot
+```
+
+
+
+### B
+```{r}
+sel.genes.ecd <- c("DNMT3A", "TET2", "ASXL1", "PPM1D", "TP53", "ATM", "SRSF2", "SF3B1")
+
+#colors=scales::hue_pal(l=55)(8)
+colors=RColorBrewer::brewer.pal(10, "Paired")[-(7:8)]
+
+ecd_genes <- ch_red_sexage %>%
+  dplyr::select(symbol, age) %>% 
+  filter(symbol %in% sel.genes.ecd) 
+
+ecd_ch <- ch_red_sexage %>%
+  dplyr::select(age) %>% 
+  mutate(symbol = "CH overall") 
+
+ecd <- bind_rows(ecd_ch, ecd_genes) %>% 
+  mutate(symbol = factor(symbol, levels = c("CH overall", sel.genes.ecd))) %>% 
+  ggplot(., aes(age, color = symbol)) + stat_ecdf(geom = "line", size=.8) + 
+  scale_color_manual(values = c("black", colors)) +
+  theme_c2() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=12, face = "italic"),
+        legend.position = c(0.15, 0.75)) +
+  labs(y = "ECD", x="Age")
+
+ecd
+
+
+for (i in 2:length(top_genes)){
+  j=top_genes[i]
+  dt=ch_red_sexage %>% filter(symbol == "DNMT3A") %>% pull(age)
+  o=ch_red_sexage %>% filter(symbol == j) %>% pull(age)
+  k = suppressWarnings(ks.test(dt,o))
+  t=wilcox.test(dt,o)
+  print(paste("DNMT3A vs", j, "; KS =", format.pval(k$p.value, digits = 2), round(k$statistic,2),
+              "; W = ", round(median(dt),2),"vs", round(median(o),2), "; diff= ", round(median(o)-median(dt),1) , format.pval(t$p.value,  digits = 2) ))
+}
+
+# relative to the rest
+for (i in 1:length(top_genes)){
+  j=top_genes[i]
+  g1=ch_red_sexage %>% filter(symbol == j) %>% pull(age)
+  g2=ch_red_sexage %>% filter(symbol != j) %>% pull(age)
+  k = suppressWarnings(ks.test(g1, g2))
+  t=wilcox.test(g1, g2)
+  print(paste(j, " vs rest of genes; KS =", format.pval(k$p.value, digits = 2), round(k$statistic,2),
+              "; W = ", round(median(g1),2),"vs", round(median(g2),2), "; diff= ", round(median(g2)-median(g1),1) , format.pval(t$p.value,  digits = 2) ))
+}
+
+
+df=ch_red_sexage %>% 
+  filter(symbol %in% sel.genes.ecd) %>% 
+  select(age, symbol)  
+pw=pairwise.wilcox.test(df$age, df$symbol, p.adjust.method = "fdr")
+pw
+
+```
+
+
+
+### C
+```{r include=FALSE}
+
+pval_chisq <- function(a,b,c,d){
+  res <- chisq.test(matrix(c(a,b,c,d), nrow=2))
+  return(res$p.value)
+}
+
+
+ch_red_sex_genes <- pheno_sexage %>%
+  mutate(CH = if_else(eid %in% ch_red$eid, "CH", "Ctrl")) %>%
+  full_join(ch_red %>% select(eid, symbol), by="eid") %>%
+  mutate(symbol = case_when(is.na(symbol) ~ "Ctrl",
+                            symbol %in% top_genes ~ symbol,
+                            TRUE ~ "Other")) %>%
+  group_by(sex, symbol) %>%
+  summarise(n=n()) %>%
+  ungroup() %>% 
+  pivot_wider(names_from = sex, values_from = n) %>%
+  mutate(ratio = Female/Male)  %>%
+  mutate(symbol_it = case_when(symbol %in% top_genes ~ paste0("*",symbol,"*"),
+                               TRUE ~ symbol))  
+
+sex_genes <- ch_red_sex_genes %>% 
+  mutate(Fc = ch_red_sex_genes %>% filter(symbol == "Ctrl") %>% pull(Female),
+         Mc = ch_red_sex_genes %>% filter(symbol == "Ctrl") %>% pull(Male)) %>% 
+  mutate(pval = pmap_dbl(.l=list(Female, Male, Fc, Mc), .f=pval_chisq)) %>% 
+  mutate(log10pval = -log10(pval)) %>% 
+  mutate(color = case_when(symbol == "Ctrl" ~ 0,
+                           ratio > 1.22 ~ log10pval,
+                           ratio < 1.22 ~ -log10pval)) %>% 
+  mutate(sig = case_when(pval < 0.0001 ~ "***",
+                         pval < 0.001~ "**",
+                         pval < 0.01~ "*")) %>% 
+  mutate(symbol_it = forcats::fct_reorder(symbol_it, ratio)) %>% 
+  ggplot(., aes(x=symbol_it, y=ratio, fill=ratio))+
+  geom_bar(stat="identity") +
+  geom_abline(intercept = 1.22, slope=0, color = "black", linetype=2) +
+  coord_flip(clip = "off")+
+  theme_c2()+
+  theme(
+    panel.grid = element_blank(), panel.border = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = ggtext::element_markdown(), 
+    legend.key.size = unit(0.4, "cm"),
+    legend.title = element_text(size=12),
+    legend.position = c(0.8, 0.7),
+    legend.text = element_text(size=12)
+    )+
+  theme(plot.margin = unit(c(15, 5, 1, 1), "pt"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0, 2.4)) +
+  #scale_x_discrete(labels = ch_red_sex_genes$symbol_it)+
+  scale_fill_gradient2(low = "#984ea3", mid = "grey", high = "#4daf4a",
+  #scale_fill_gradient2(low = "#E41A1C", mid = "grey", high = "#377EB8",
+                       midpoint = 1.2, name="Ratio F:M", 
+                       breaks = c(0, 0.6, 1.2, 1.8, 2.4),
+                       labels = c("0", "0.6", "1.2", "1.8", "2.4"))+
+  labs(y = "Ratio Female/Male") +
+  geom_text(aes(label=sig, hjust=-0.1, vjust=0.8), color="black", size=6) +
+  annotate("text", x=12, y=1.24, label="Cohort ratio = 1.2",
+           size=16/.pt, hjust=0.5, vjust = -2) +
+  annotate("text", x=4, y=1.8, hjust="left",
+           label = "P-value\n  * < 0.01\n ** < 0.001\n*** < 0.0001", 
+           size=12/.pt)
+
+  
+sex_genes
+
+```
+
+
+### ALL
+```{r}
+
+r1 <- plot_grid(waterplot, labels = 'auto', scale = 0.95)
+
+r2 <- plot_grid(ecd, sex_genes, labels = c('b', 'c'), rel_widths = c(1,1), axis = "tb", align = "h", scale = .9)
+
+
+fig1 <- plot_grid(r1, r2, nrow = 2, rel_heights = c(1,1))
+fig1
+ggsave("output/plots/figures/Fig1_rev.pdf", width = 14, height = 10)
+
+
+```
+
+
+
+## FIGURE 2
+
+
+### A
+
+```{r}
+
+list <- c("CH", "CH_large", "CH_small", "DNMT3A", "TET2", "ASXL1", "JAK2", "SRSF2_SF3B1")
+
+sel_counts <- c("WBC", "RBC", "HGB", "HT", "MCV", "MCH", "MCHC", "RDW", "PLT", "PCT",
+         "MPV", "PDW", "LY#", "MO#", "NE#", "EO#", "BA#", "NRBC#",
+         "RET#", "MRV", "MSCV", "IRF", "HLR#" )
+
+blood_res <- vroom("output/tables/results_counts_logit_CH.tsv") %>%
+  janitor::clean_names() %>% 
+  filter(abbrev %in% sel_counts) %>% 
+  mutate(abbrev = str_replace_all(abbrev, "#", "")) %>% 
+  group_by(abbrev) %>%
+  filter(any(fdr < 0.001)) %>% 
+  ungroup() %>% 
+  mutate(group = "Blood counts",
+         name = factor(abbrev,
+                       levels = c("RDW", "PDW", "PCT", "PLT", "WBC", "HLR", "RET", "NE", "MO",
+                                  "LY", "RBC", "NRBC", "EO","HT", "HGB", "MCH", "MCV")),
+         analysis = test)
+
+blood_res
+
+biochem_res <- vroom("output/tables/results_biochem_logit_CH.tsv") %>%
+  janitor::clean_names() %>%  
+  group_by(abbrev) %>%
+  filter(any(fdr < 0.05)) %>% 
+  ungroup() %>% 
+  mutate(group = "Biochemistry",
+         name = factor(abbrev, levels = c("CYS", "PHOS", "GGT", "ALT", "AST",
+                                          "APOA","HDL","LDLD","CHOL", "HBA1C")),
+         analysis = test) 
+
+biochem_res
+
+
+
+
+basal = c("age", "sex", 
+          "bmi",
+          "ever.smoked", "smoking_status", 
+          "obesity", "t2dm", "hypert")
+
+basal_res <- vroom("output/tables/results_basal_all.tsv") %>% 
+  janitor::clean_names() %>% 
+  filter(name %in% basal) %>% 
+  mutate(group = "Basal") %>% 
+  mutate(term =str_remove(term, "dis|cond"),
+         name = clean_title(name),
+         name = if_else(term != "", paste0(name, ":", term), name)) %>%
+  mutate(name = case_when(name == "Bmi" ~ "BMI",
+                          name == "T2dm" ~ "T2DM",
+                          name == "Hypert" ~ "Hypertension",
+                          TRUE ~ name)) %>% 
+  mutate(name = factor(name, levels = c("Age", "Sex:Male", 
+                                        "Ever smoked:Yes",
+                                        "Smoking status:Previous", "Smoking status:Current",
+                                        "BMI", 
+                                        "Obesity", "T2DM", "Hypertension"))) %>% 
+  vroom_write("output/tables/results_basal_all_red.tsv")
+
+basal_res
+
+
+RB_palette <- c("#053061", "#2166AC", "#4393C3", "#92C5DE","#ffffff", "#F4A582", "#D6604D", "#B2182B", "#67001F")
+
+df2a <- bind_rows(blood_res, biochem_res, basal_res) %>% 
+  tidyr::complete(nesting(name, group), analysis) %>% 
+  mutate(estimate = case_when(estimate >= 10 ~ 10,
+                           estimate < -10 ~ -10,
+                           estimate == 0 | p_value == Inf ~ as.numeric(NA),
+                           TRUE ~ estimate)) %>% 
+  mutate(p_value = case_when(is.na(estimate) ~ as.numeric(NA),
+                           TRUE ~ p_value)) %>% 
+  mutate(logpval = -log10(p_value),
+         size_sig = if_else(logpval >= 10, 10, logpval)) %>% 
+  mutate(logOR= log(estimate)) %>% 
+  mutate(logOR = case_when(logOR >= 2.77 ~ 2.77,
+                           logOR < -2.77 ~ -2.77,
+                           TRUE ~ logOR)) %>%
+  mutate(analysis = as.character(analysis),
+         analysis = case_when(analysis == "CH_large" ~ "CH large",
+                          analysis == "CH_small" ~ "CH small",
+                          analysis == "SRSF2_SF3B1" ~ "SRSF2+SF3B1",
+                          TRUE ~ analysis),
+         analysis = factor(analysis, 
+                       levels = rev(c("CH", "CH large","CH small", 
+                                  "DNMT3A", "TET2", "ASXL1", "JAK2", "SRSF2+SF3B1")))) %>% 
+  mutate(group = factor(group, levels = c("Basal", "Blood counts", "Biochemistry")))
+
+plot2a <- ggplot(df2a, aes(x=name, analysis)) +
+  geom_tile(aes(fill = logOR), color='grey') + 
+  scale_y_discrete(labels = rev(c("CH", "CH large", "CH small" ,"*DNMT3A*", "*TET2*", "*ASXL1*", "*JAK2*", "*SRSF2*<br>+*SF3B1*")),expand = c(0,0)) +
+  scale_fill_gradientn(colours =RB_palette,
+                       name="OR",
+                       limits = c(-3, 3),
+                       breaks = c(2.77, 2.08, 1.39, 0.69, 0, -0.69, -1.39, -2.08, -2.77),
+                       labels = c(">16","8", "4","2","1","0.5", "0.25", "0.125", "<0.0625")
+                       )+
+  theme_c2() + theme(
+    axis.title = element_blank(), 
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    axis.text.y = ggtext::element_markdown(size = 16),
+    axis.text.x = element_text(size = 16, angle = 45, vjust = 1, hjust = 1)
+  ) + 
+  geom_point(aes(size = size_sig), shape = "*") +
+  scale_size_continuous(range = c(4, 7), 
+                        limits = c(1.30103, 10), 
+                        breaks = c(1.30103, 3, 6, 10), 
+                        labels = c("0.05", "1e-03", "1e-06", "<1e-10"), 
+                        name="P-val") +
+  guides(fill = guide_colorbar(order = 1), size = guide_legend(order = 2)) +
+  
+  facet_grid(~ group, scales = "free_x", space = "free", drop=T)  +
+  theme(strip.text = element_text(size=16),
+        strip.background = element_blank()
+        )
+  
+
+plot2a
+```
+
+### B
+
+```{r}
+
+cancer_hem_pheno <- c("MN","AML", "MDS", "MPN", "CMML",
+                      "LL", 
+                      "Hematopoietic_neoplasms",
+                      "Other_malign_neoplasms", "All_malignant_neoplasms")
+cancer_pheno <- c("breast", "prostate", "lung", "colorectal", "smallintestine",
+                  "melanoma","lymphoma","kidney", "headneck", "brain", "bladder",
+                  "pancreas", "uterine", "oesophageal", "ovarian", "stomach",
+                  "liver", "myeloma", "thyroid", "biliari", "sarcoma")
+cvd_pheno <- c("mi", "stroke", "cad", "hf" , "af", "composite")
+
+
+crr_res <- vroom("output/tables/results_crr_diseases.tsv") %>% 
+  janitor::clean_names() %>% 
+  filter(name %in% c(cancer_hem_pheno, cancer_pheno, cvd_pheno)) %>% 
+  mutate(group = case_when(name %in% cancer_hem_pheno ~ "Hematopoietic neoplasm",
+                          name %in% cancer_pheno ~ "Cancer",
+                          name %in% cvd_pheno ~ "Cardiovascular")) %>% 
+  mutate(group = replace(group, name %in% c("Other_malign_neoplasms", "All_malignant_neoplasms"), "Cancer")) %>% 
+  group_by(group, analysis) %>% 
+  mutate(fdr = p.adjust(p_value)) %>% 
+  ungroup() %>% 
+  vroom_write("output/tables/results_crr_diseases_red.tsv")
+
+
+death_list <- c("Any cause", "CVD-Composite",
+          "Hematological neoplasms", "Non-hematological neoplasms")
+
+death_res <- vroom("output/tables/results_cox_cvd_death.tsv") %>% 
+  janitor::clean_names() %>% 
+  filter(name %in% death_list) %>% 
+  mutate(group = "Death") %>% 
+  group_by(group, analysis) %>% 
+  mutate(fdr = p.adjust(p_value)) %>% 
+  ungroup() %>% 
+  vroom_write("output/tables/results_cox_cvd_death_red.tsv")
+
+
+df2b <- bind_rows(crr_res, death_res) %>% 
+  tidyr::complete(nesting(name, group), analysis) %>% 
+  mutate(logOR= log(estimate)) %>% 
+  mutate(logOR = case_when(logOR >= 2.77 ~ 2.77,
+                           logOR < -2.77 ~ -2.77,
+                           TRUE ~ logOR)) %>% 
+  mutate(logpval = -log10(p_value),
+         size_sig = if_else(logpval >= 10, 10, logpval)) %>% 
+  mutate(group = factor(group, levels = c("Hematopoietic neoplasm", "Cancer", "Cardiovascular", "Death"))) %>% 
+  mutate(analysis = factor(analysis, levels = rev(c("CH", "CH_large", "CH_small", "DNMT3A", "TET2", "ASXL1", "JAK2", "SRSF2_SF3B1")))) %>% 
+  mutate(term =str_remove(term, "dis|cond"),
+         name = clean_title(name),
+         name = if_else(term != "", paste0(name, ":", term), name)) %>%
+  mutate(name = case_when(name == "Hematopoietic neoplasms" ~ "Any neoplasm", 
+                          name == "MN" ~ "Myeloid neplasm",
+                          name == "LL" ~ "Lymphoid leukemia",
+                          name == "Other malign neoplasms" ~ "Non-hematopoietic neoplasm",
+                          name == "All malignant neoplasms" ~ "Malignant neoplasm",
+                          
+                          name == "Mi" ~ "Myocardial infarction",
+                          name == "Stroke" ~ "Stroke",
+                          name == "Cad" ~ "Coronary artery disease",
+                          name == "Hf" ~ "Heart Failure",
+                          name == "Af" ~ "Atrial Fibrillation",
+                          name == "Composite" ~ "Composite",
+                        
+                          name == "Hematological neoplasms" ~ "Hematopoietic neoplasm", 
+                          name == "Non-hematological neoplasms" ~ "Other malignant neoplasm",
+                          TRUE ~ name)) %>%
+  mutate(name = factor(name, levels = c("Any neoplasm", "Myeloid neplasm", 
+                                        "AML", "MDS", "MPN", "CMML", 
+                                        "Lymphoid leukemia",
+                                        "Malignant neoplasm",
+                                        "Non-hematopoietic neoplasm",
+                                        "Lung", "Lymphoma", "Kidney",
+                                        "Liver", "Pancreas",
+                                        "Stomach","Oesophageal",
+                                        "Smallintestine","Colorectal",
+                                        "Headneck", "Thyroid",
+                                        "Biliari",  "Bladder", 
+                                        "Uterine", "Breast", "Ovarian", "Prostate",
+                                        "Melanoma", "Sarcoma",
+                                        "Myeloma", "Brain",
+                                        "Myocardial infarction", "Stroke",
+                                        "Coronary artery disease", "Heart Failure", 
+                                        "Atrial Fibrillation", "Composite",
+                                        "Any cause", 
+                                        "Hematopoietic neoplasm", 
+                                        "Other malignant neoplasm",
+                                        "CVD-Composite"
+                                        )))  %>% 
+  group_by(name) %>% 
+  filter(group != "Cancer" | (group == "Cancer" & any(p_value <= 0.05, na.rm = T))) %>% 
+  ungroup()
+
+
+RB_palette <- c("#053061", "#2166AC", "#4393C3", "#92C5DE","#ffffff", "#F4A582", "#D6604D", "#B2182B", "#67001F")
+
+plot2b <- ggplot(df2b, aes(x=name, analysis)) +
+  geom_tile(aes(fill = logOR), color='grey') + 
+  scale_y_discrete(labels = rev(c("CH", "CH large", "CH small" ,"*DNMT3A*", "*TET2*", "*ASXL1*", "*JAK2*", "*SRSF2*<br>+*SF3B1*")),expand = c(0,0)) +
+  scale_fill_gradientn(colours =RB_palette,
+                       name="HR",
+                       limits = c(-3, 3),
+                       breaks = c(2.77, 2.08, 1.39, 0.69, 0, -0.69, -1.39, -2.08, -2.77),
+                       labels = c(">16","8", "4","2","1","0.5", "0.25", "0.125", "<0.0625")
+                       )+
+  theme_c2() + theme(
+    axis.title = element_blank(), 
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    axis.text.y = ggtext::element_markdown(size = 16),
+    axis.text.x = element_text(size = 16, angle = 45, vjust = 1, hjust = 1)
+  ) + 
+  geom_point(aes(size = size_sig), shape = "*") +
+  scale_size_continuous(range = c(4, 7), 
+                        limits = c(1.30103, 10), 
+                        breaks = c(1.30103, 3, 6, 10), 
+                        labels = c("0.05", "1e-03", "1e-06", "<1e-10"), 
+                        name="P-val") +
+  guides(fill = guide_colorbar(order = 1), size = guide_legend(order = 2)) +
+  
+  facet_grid(~ group, scales = "free_x", space = "free", drop=T)  +
+  theme(strip.text = element_text(size=16),
+        strip.background = element_blank()
+        )
+  
+
+plot2b
+
+
+
+```
+
+
+
+### ALL
+```{r}
+
+
+fig2 <- plot_grid(plot2a, plot2b,
+                   labels = 'auto',align = "hv", axis = "tblr", 
+                   scale = 1,  nrow = 2, rel_heights = c(1, 1))
+
+fig2
+
+ggsave("output/plots/figures/Fig2_rev.pdf", width = 16, height = 12)
+
+
+```
+
+
+## FIGURE S1
+
+### A
+```{r}
+
+hist_ukb <- ggplot(pheno_red, aes(x=age,  fill=sex)) +
+  geom_histogram(bins = length(unique(pheno_red$age)), 
+                 alpha=0.5, color='black')+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0)) +
+  scale_fill_manual(values=c("#4daf4a", "#984ea3")) +
+  theme_c2()+
+  theme(legend.position = c(0.25, 0.8),
+        legend.title = element_blank(),
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 12)) 
+
+hist_ukb
+
+```
+
+### B
+
+```{r}
+pie_sex <- pheno_red %>%
+  select(sex) %>% 
+  group_by_all() %>% summarise(n=n()) %>% 
+  ungroup() %>% 
+  mutate(perc = 100*n/(sum(n))) %>% 
+  ggplot(., aes(x="", y=n, fill=sex)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.title=element_text(size=14, face="bold")) +
+  theme(axis.text.x=element_blank(),
+        legend.position = "none", legend.direction = "horizontal",
+        legend.title = element_blank(), legend.text = element_text(size = 12)) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE)) +
+  scale_fill_manual(name="",values=c("#4daf4a", "#984ea3"))+
+  geom_text(aes(label = paste0(sex, "\n", round(perc), "%")), 
+            position = position_stack(vjust=.4), color = 'white', size=5)
+
+pie_sex
+
+```
+
+
+
+### C
+
+```{r}
+
+pal1 <- c("#1F78B4","#A6CEE3", brewer.pal(3, "Dark2"))
+
+pie_ethnic <- pheno_red %>%
+  select(ethnic) %>% 
+  group_by_all() %>% summarise(n=n()) %>% 
+  mutate(ethnic = if_else(n < 2000, "Other ethnic group", ethnic) )%>%
+  group_by(ethnic) %>% summarise(n=sum(n)) %>%
+  mutate(ethnic = case_when(ethnic == "Any other white background" ~ "Other white",
+                            TRUE ~ ethnic) )%>%
+  mutate(ethnic = factor(ethnic, 
+                         levels = c("British", "Other white",
+                                    "Irish", "Indian", "African" ,"Caribbean",
+                                    "Other ethnic group"))) %>% 
+  ungroup() %>% 
+  mutate(perc = 100*n/(sum(n))) %>% 
+  arrange(desc(ethnic)) %>%
+  mutate(text_y = cumsum(n) - n/2) %>% 
+  ggplot(., aes(x="", y=n, fill=ethnic)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0, direction=-1) +
+  theme_minimal()+
+  theme(
+    plot.margin = unit(c(1,1,4,1), "lines"),
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.title=element_text(size=14, face="bold")) +
+  theme(axis.text.x=element_blank(),
+        legend.position = c(0.5, -0.05), legend.direction = "horizontal",
+        legend.title = element_blank(), legend.text = element_text(size = 12)) +
+  guides(fill = guide_legend(nrow = 3, byrow = TRUE)) +
+  scale_fill_manual(name="",values=pal1)+
+  geom_text(aes(label = ifelse(perc>10, paste0(round(perc), "%"),"")), 
+            position = position_stack(vjust=.5), color = 'white', size=5)+
+  ggrepel::geom_label_repel(
+    aes(label = ifelse(perc<10, paste0(round(perc), "%"), ""), x = 1.4, y=text_y),
+                            size=5,
+                            show.legend = F, 
+                            nudge_x = .5, 
+                            segment.size = .5,
+    color = 'white', segment.color='black')
+  
+
+pie_ethnic
+
+```
+
+### D
+```{r}
+num_mut <- ch_red_sexage %>%
+  group_by(eid) %>%
+  count() %>%
+  group_by(n) %>% 
+  count(name = "N") %>% 
+  ggplot(., aes(x=reorder(n,-N), y=N))+
+  geom_bar(stat="identity",fill="steelblue")+
+  theme_c2()+
+  theme(
+    panel.grid = element_blank(), panel.border = element_blank())+
+  scale_y_continuous(limits = c(0,11000), expand = c(0, 0))+
+  geom_text(aes(label=N), vjust=-0.3, color="black", size=5)+
+  labs( x = "Number of mutations", y = "Individuals")
+num_mut
+```
+
+
+### E
+```{r}
+
+pieplot <- ch_red_sexage %>%
+  select(mutation_type) %>% 
+  group_by_all() %>% summarise(n=n()) %>% 
+  ungroup() %>% 
+  mutate(perc = 100*n/(sum(n))) %>% 
+  mutate(mutation_type = factor(mutation_type, levels = c("Missense", "Nonsense", "Frameshift", "Splicing", "Other"))) %>% 
+  arrange(desc(mutation_type)) %>%
+  mutate(text_y = cumsum(n) - n/2) %>% 
+  ggplot(., aes(x="", y=n, fill=mutation_type)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.title=element_text(size=14, face="bold")) +
+  theme(axis.text.x=element_blank(),
+        #legend.position = "bottom", legend.direction = "horizontal",
+        legend.title = element_blank(), legend.text = element_text(size = 12)) +
+  #guides(fill = guide_legend(nrow = 2, byrow = TRUE)) +
+  scale_fill_manual(name="",values = mut_type_colors)+
+  geom_text(aes(label = ifelse(perc>10, paste0(round(perc), "%"), "")), 
+            position = position_stack(vjust=.4), size=5, color = 'white') +
+  ggrepel::geom_label_repel(
+    aes(label = ifelse(perc<10, paste0(round(perc), "%"), ""), x=1.4, y=text_y),
+                            size=5,
+                            show.legend = F, 
+                            nudge_x = .5, 
+                            segment.size = .5,
+    color = 'white', segment.color='black')
+
+pieplot
+```
+
+
+### F
+```{r}
+
+COLORS6 <- c(
+  "#2EBAED", "#000000", "#DE1C14",
+  "#D4D2D2", "#ADCC54", "#F0D0CE"
+)
+
+mut_types <- ch_red_sexage %>%
+  filter(variant_class == "SNV") %>% 
+  mutate(var = paste(ref_allele,alt_allele, sep=">")) %>% 
+  mutate(var2 = case_when(var == "G>T" | var == "C>A" ~ "C>A",
+                          var == "G>C" | var == "C>G"~ "C>G",
+                          var == "G>A" | var == "C>T"~ "C>T",
+                          var == "A>T" | var == "T>A"~ "T>A",
+                          var == "A>G" | var == "T>C"~ "T>C",
+                          var == "A>C" | var == "T>G" ~ "T>G")) %>% 
+  drop_na(var2) %>% 
+  group_by(var2) %>%
+  summarise (n = n()) %>%
+  mutate(freq = round(100* n / sum(n),2)) %>% 
+  ggplot(., aes(x=var2, y=freq, fill=factor(var2)))+
+  geom_bar(stat="identity")+
+  theme_c2()+
+  theme(panel.grid = element_blank(), panel.border = element_blank(),
+        legend.position="none")+
+  scale_y_continuous(limits = c(0,70), expand = c(0, 0))+
+  scale_fill_manual(values=COLORS6)+
+  #geom_text(aes(label=paste0(freq, "%")), vjust=-0.3, color="black", size=5)+
+  labs( x = "Point mutation type", y = "Relative contribution (%)")
+
+mut_types
+```
+
+
+### G
+```{r}
+ch_red_density_all <- ch_red_sexage %>%
+  summarise(mean=round(mean(vaf), 2), median=round(median(vaf), 2))
+
+densityall <- ggplot(ch_red_sexage, aes(vaf) ) +
+  geom_density(alpha = 0.4, fill='black', colour='black') +
+  scale_y_continuous(expand = c(0, 0), limits = c(0,12), breaks = c(0, 5, 10)) + 
+  scale_x_continuous(expand = c(0,0), limits = c(0,1), breaks = c(0, .2, .4, .6, .8), labels = c("0","0.2", "0.4", "0.6", "0.8")) +
+  theme_c2() + 
+  theme(legend.position = 'none', 
+        panel.grid = element_blank(), panel.border = element_blank(),
+        strip.background = element_rect(colour="white", fill="white"),
+        strip.text.x = element_text(size=20)) +
+  geom_text(data=ch_red_density_all, aes(x = .4, y = 7, label = paste("Mean = ", mean, sep="")), size=5, col='black', hjust = 0) +
+  geom_text(data=ch_red_density_all, aes(x = .4, y = 5.5, label = paste("Median = ", median, sep="")), size=5, col='black', hjust = 0) +
+  xlab("VAF") + ylab("Density")
+
+densityall
+```
+
+### H
+
+```{r include=FALSE}
+
+ch_red_density_group <- ch_red_sexage %>%
+  select(mutation_type, vaf) %>% 
+  filter(mutation_type != "Other") %>% 
+  group_by(mutation_type) %>%
+  summarise(mean=round(mean(vaf), 2), median=round(median(vaf), 2))
+
+
+density_4 <- ch_red_sexage %>%
+  select(mutation_type, vaf) %>% 
+  filter(mutation_type != "Other") %>% 
+  ggplot(., aes(vaf, colour=mutation_type, fill=mutation_type)) +
+  geom_density(alpha = 0.4) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0,12), breaks = c(0, 5, 10)) + 
+  scale_x_continuous(expand = c(0,0), limits = c(0,1), breaks = c(0, .2, .4, .6, .8), labels = c("0","0.2", "0.4", "0.6", "0.8")) +
+  #geom_vline(data=ch_red_density_group, aes(xintercept=mean, color=mut), linetype="dashed", size=1) +
+  scale_fill_manual(name="",values = mut_type_colors)+
+  scale_color_manual(name="",values = mut_type_colors)+
+  facet_wrap(vars(mutation_type), nrow = 1) +
+  theme_c2() + 
+  theme(legend.position = 'none', 
+        panel.grid = element_blank(), panel.border = element_blank(),
+        strip.background = element_rect(colour="white", fill="white"),
+        strip.text.x = element_text(size=20)) +
+  geom_text(data=ch_red_density_group, aes(x = .4, y = 7, label = paste("Mean = ", mean, sep="")), size=5, col='black', hjust = 0) +
+  geom_text(data=ch_red_density_group, aes(x = .4, y = 5.5, label = paste("Median = ", median, sep="")), size=5, col='black', hjust = 0) +
+  xlab("VAF") + ylab("Density")
+
+density_4
+```
+
+
+
+### ALL
+
+```{r}
+
+r0 <- plot_grid(hist_ukb, pie_sex, pie_ethnic, labels = c('a', 'b', 'c'), 
+                label_size = 18,axis = "tblr",align = "h",
+                rel_widths = c(1.5,1,1), scale = c(.9, 1,1), nrow=1)
+r0
+
+r1 <- plot_grid(num_mut, pieplot, labels = c('d', 'e'), label_size = 18,
+                rel_widths = c(1,1), scale = c(.9, .9))
+r1
+
+r2 <- plot_grid(mut_types, densityall, labels = c('f', 'g'), label_size = 18,
+                align = "hv", 
+                axis = "tblr", rel_widths = c(1.5,1), scale = c(.9, .9))
+r2
+
+r3 <- plot_grid(density_4, labels = c('h'), label_size = 18,
+                align = "hv", 
+                axis = "tblr",  scale = c(.9, .9))
+r3
+
+
+
+
+figs1 <- plot_grid(r0, r1, r2, r3,
+                   nrow = 4, rel_heights = c(1,1,1,0.8),
+                   align = "v", axis = "tblr")
+figs1
+
+ggsave("output/plots/figures/Ext_Fig1.pdf", width = 14, height = 18)
+
+```
+
+
+
+
+## FIGURE S2
+
+### A
+```{r}
+
+prevalence <- ch_red_sexage %>%
+  #keep only the mutation with the highest vaf in subject with num mut >1
+  group_by(eid) %>% arrange (-vaf) %>% slice(1) %>% ungroup() %>%
+  select(age, eid) %>%
+  group_by(age) %>%
+  summarise(n=n()) %>%
+  ungroup() %>%
+  left_join(pheno_sexage %>% group_by(age) %>% summarise(t=n()), by="age") %>% 
+  mutate(pct = round(100* (n/t) ,2)) %>%
+  ggplot(., aes(age, pct))+
+  geom_smooth(method = "gam") +
+  scale_y_continuous(limits = c(0,12), breaks = c(0,3,6,9,12))+
+  guides(fill = "none")+
+  theme_c2() +
+  labs( x = "Age", y = "CH prevalence (%)")
+prevalence
+```
+
+### B
+```{r}
+colors=RColorBrewer::brewer.pal(10, "Paired")[-(7:8)]
+
+prevalence_gene <- ch_red_sexage %>%
+  group_by(eid) %>% arrange (-vaf) %>% slice(1) %>% ungroup() %>%
+  select(age, symbol, eid) %>%
+  filter(symbol %in% c("DNMT3A", "TET2", "ASXL1", "PPM1D", "TP53", "ATM", "SRSF2", "SF3B1")) %>% 
+  mutate(symbol = factor(symbol, levels = c("DNMT3A", "TET2", "ASXL1", "PPM1D", "TP53", "ATM", "SRSF2", "SF3B1"))) %>% 
+  group_by(age, symbol) %>%
+  summarise(n=n()) %>%
+  ungroup() %>%
+  left_join(pheno_sexage %>% group_by(age) %>% summarise(t=n()), by="age") %>% 
+  mutate(pct = round(100* (n/t) ,2)) %>%
+  ggplot(., aes(age, pct, color=symbol, fill=symbol))+
+  geom_smooth(method = "gam", alpha=0.2) +
+  scale_y_continuous(limits = c(0.01,6), 
+                     #breaks = c(0.01, 0.03, 0.1, 0.3, 1, 3, 6), 
+                     breaks = c(0.01, 0.05, 0.2, 1, 5),
+                     trans = "log")+
+  scale_color_manual(values=colors, name="Symbol")+
+  scale_fill_manual(values=colors)+
+  theme_c2() +
+  guides(color=guide_legend(override.aes=list(fill=NA)), fill='none')+ 
+  labs( x = "Age", y = "CH prevalence (%)")
+prevalence_gene
+
+```
+
+### C
+```{r}
+
+clon_age <- ch_red_sexage_clon <- ch_red_sexage %>%
+  select(vaf, age) %>%
+  ggplot(aes(age, vaf))+
+  geom_smooth(method = "gam") +
+  #scale_y_continuous(trans = "log")+
+  guides(fill = "none")+
+  theme_c2() +
+  labs( x = "Age", y = "VAF")
+
+clon_age
+
+```
+
+### D
+```{r}
+
+ecd_sex <- ch_red_sexage %>%
+  dplyr::select(sex, age) %>% 
+  ggplot(., aes(age, color = sex)) + stat_ecdf(geom = "line", size=.8) +  
+  theme_c2() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size=12),
+        legend.position = c(.8, .2)) +
+  scale_color_manual(values=c("#4daf4a", "#984ea3")) +
+  labs(y = "ECD", x="Age", color="Sex")
+
+ecd_sex
+
+m=ch_red_sexage %>% filter(sex == "Male") %>% pull(age)
+f=ch_red_sexage %>% filter(sex == "Female") %>% pull(age)
+t= wilcox.test(m,f) ; t
+print(paste("Male vs Female: Median = ", round(median(m),2),"vs", round(median(f),2), "diff:", round(median(m)-median(f),2) , "; W =", format.pval(t$p.value, digits = 2)))
+
+```
+
+
+
+
+### ALL
+```{r}
+
+figs2 <- plot_grid(prevalence, prevalence_gene, clon_age, ecd_sex,
+                   ncol=2, 
+                   align = "hv", axis = "tblr",
+                   scale =.9, labels ='auto')
+figs2
+ggsave("output/plots/figures/Ext_Fig2_rev.pdf", width = 14, height = 8)
+
+
+```
+
+
+
+## FIGURE S3
+
+### A
+
+```{r}
+res_all_icd10 <- vroom("output/tables/res_logistic_all_diseases.tsv")
+
+codes19_phewas <- vroom(here::here("data/raw/Codings_Showcase.csv")) %>% 
+  filter(Coding == 19) %>%
+  mutate(Value2 = gsub("Block ", "", Value)) %>% 
+  mutate(upper_level = case_when(str_length(Value2) == 4 ~ str_sub(Value, 1, 3))) %>% 
+  mutate(category = str_sub(Value, 1, 1)) %>% 
+  filter(!grepl("O|P|Q|S|T|U|V|W|X|Y|-", category) ) %>% 
+  mutate(definition = case_when(grepl("A|B", Value2) ~ "Certain infectious and parasitic diseases",
+                            
+                            grepl("C|D[0-4]", Value2) ~ "Neoplasms",
+                            grepl("D[5-8]", Value2) ~ "Diseases of the blood and blood-forming organs and certain disorders involving the immune mechanism",
+                            grepl("E", Value2) ~ "Endocrine, nutritional and metabolic diseases",
+                            grepl("F", Value2) ~ "Mental, Behavioral and Neurodevelopmental disorders",
+                            grepl("G", Value2) ~ "Diseases of the nervous system",
+                            grepl("H[0-5]", Value2) ~ "Diseases of the eye and adnexa",
+                            grepl("H[6-9]", Value2) ~ "Diseases of the ear and mastoid process",
+                            grepl("I", Value2) ~ "Diseases of the circulatory system",
+                            grepl("J", Value2) ~ "Diseases of the respiratory system",
+                            grepl("K", Value2) ~ "Diseases of the digestive system",
+                            grepl("L", Value2) ~ "Diseases of the skin and subcutaneous tissue",
+                            grepl("M", Value2) ~ "Diseases of the musculoskeletal system and connective tissue",
+                            grepl("N", Value2) ~ "Diseases of the genitourinary system",
+                            
+                            grepl("R", Value2) ~ "Symptoms, signs and abnormal clinical and laboratory findings, not elsewhere classified",
+                            grepl("Z", Value2) ~ "Factors influencing health status and contact with health services"
+                            )
+         ) %>% 
+  mutate(definition_short = case_when(grepl("A|B", Value2) ~ "Infectious diseases",
+                            
+                            grepl("C|D[0-4]", Value2) ~ "Neoplasms",
+                            grepl("D[5-8]", Value2) ~ "Hematology",
+                            grepl("E", Value2) ~ "Endocrine and metabolic",
+                            grepl("F", Value2) ~ "Mental disorders",
+                            grepl("G", Value2) ~ "Nervous system",
+                            grepl("H", Value2) ~ "Eye and ear",
+                            grepl("I", Value2) ~ "Circulatory system",
+                            grepl("J", Value2) ~ "Respiratory system",
+                            grepl("K", Value2) ~ "Digestive system",
+                            grepl("L", Value2) ~ "Skin and subcutaneous tissue",
+                            grepl("M", Value2) ~ "Musculoskeletal and connective tissue",
+                            grepl("N", Value2) ~ "Genitourinary system",
+                            
+                            grepl("R", Value2) ~ "Abnormal findings",
+                            grepl("Z", Value2) ~ "Health status"
+                            )
+  )
+
+
+all_phewas_post <- res_all_icd10 %>% 
+  filter(test == "RR") %>% 
+  inner_join(codes19_phewas, by=c("name"="Value2")) %>% 
+  janitor::clean_names() %>% 
+  mutate(fdr=p.adjust(p_value)) %>%
+  vroom_write("output/tables/res_logistic_all_diseases_red.tsv")
+all_phewas_post
+
+df_post <- all_phewas_post %>%
+  filter(value %ni% all_phewas_post$upper_level) %>% 
+  arrange(name) %>% 
+  mutate(id = row_number()) %>% 
+  mutate(score = -log10(fdr)) %>% 
+  dplyr::select(-c(coding, value)) %>%
+  rename(value = name) %>% rename(name = meaning) %>% 
+  arrange(name) %>% 
+  mutate(definition_short = fct_inorder(definition_short))
+df_post
+
+# get center positions for x-axis
+axisdf <- df_post %>% 
+  group_by(definition_short) %>% 
+  summarize(center=( max(id) + min(id) ) / 2 ) %>% 
+  arrange(center) %>% 
+  mutate(definition_short = fct_inorder(definition_short))
+
+ylim=1+ceiling(max(df_post$score)/10)*10
+
+icd10_labels=df_post %>% arrange(name) %>% pull(definition_short) %>% unique()
+
+colourCount = nrow(axisdf)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+mypalette = getPalette(colourCount)
+
+phewas <- ggplot(df_post, aes(x=id, y=-log10(p_value))) +
+    #add genome-wide sig and sugg lines
+    geom_hline(yintercept = -log10(1e-9), linetype="dashed") +
+    # Show all points
+    geom_point(aes(color=definition_short, size=estimate), alpha=0.8) +
+    # scale axis:
+    scale_x_continuous(expand = c(0, 0), label = axisdf$definition_short, breaks= axisdf$center ) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, ylim),
+                       breaks = seq(0, ylim, by=10)) + 
+    # scale colors and size:
+    scale_color_manual(name="ICD-10 codes", labels = str_wrap(icd10_labels, 60), values=mypalette) + 
+    scale_size_continuous(name = "Risk Ratio", breaks = c(5, 10, 20, 30)) +
+    # custom labs
+    labs(x = "ICD-10 Codes", y = "-log10(pval)") +
+    # Add annotations
+    ggrepel::geom_text_repel(data=df_post[df_post$fdr <= 1e-15,], 
+                             #data=df_post[df_post$p_value <= 1e-9,], 
+                             aes(label=as.factor(name), 
+                                 color = as.factor(definition_short)), 
+                             size=4,
+                             force = 4, 
+                             show.legend = FALSE) +
+                            
+    # Theme:
+    theme(panel.grid = element_blank(),
+          panel.background = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "white"),
+          axis.line.y = element_line(colour = "black", size = 0.5),
+          axis.line.x = element_line(colour = "black", size = 0.5),
+          axis.text.y = element_text(size = 18, color='black'),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title = element_text(size = 20),
+          legend.text = element_text(size = 12),
+          legend.key=element_blank(),
+          legend.box = 'horizontal',
+          legend.title = element_text(size = 14),
+          legend.position = c(.8,.6),
+          strip.background = element_blank()
+          ) +
+  guides(fill = guide_legend(override.aes = aes(color = NA)),
+         color = guide_legend(ncol=2))
+
+    
+phewas
+    
+```
+
+
+
+### B
+
+```{r}
+cancer_hem_pheno <- c("MN","AML", "MDS", "MPN", "CMML",
+                      "LL", 
+                      "Hematopoietic_neoplasms",
+                      "Other_malign_neoplasms", "All_malignant_neoplasms")
+cancer_pheno <- c("breast", "prostate", "lung", "colorectal", "smallintestine",
+                  "melanoma","lymphoma","kidney", "headneck", "brain", "bladder",
+                  "pancreas", "uterine", "oesophageal", "ovarian", "stomach",
+                  "liver", "myeloma", "thyroid", "biliari", "sarcoma")
+
+
+crr_res_nonsmokers <- vroom("output/tables/results_crr_diseases_nonsmokers.tsv") %>% 
+  janitor::clean_names() %>% 
+  filter(name %in% c(cancer_hem_pheno,cancer_pheno)) %>% 
+  mutate(group = case_when(name %in% cancer_hem_pheno ~ "Hematopoietic neoplasm",
+                          name %in% cancer_pheno ~ "Cancer")) %>%
+  mutate(group = replace(group, name %in% c("Other_malign_neoplasms", "All_malignant_neoplasms"), "Cancer")) %>% 
+  group_by(group, analysis) %>% 
+  mutate(fdr = p.adjust(p_value)) %>% 
+  ungroup() %>% 
+  vroom_write("output/tables/results_crr_diseases_nonsmokers_red.tsv")
+
+
+
+dfs3b <- crr_res_nonsmokers %>% 
+  tidyr::complete(nesting(term, name), analysis)%>% 
+  mutate(logOR= log(estimate)) %>% 
+  mutate(logOR = case_when(logOR >= 2.77 ~ 2.77,
+                           logOR < -2.77 ~ -2.77,
+                           TRUE ~ logOR)) %>% 
+  mutate(logpval = -log10(p_value),
+         size_sig = if_else(logpval >= 10, 10, logpval)) %>% 
+  mutate(group = case_when(name %in% cancer_hem_pheno ~ "Hematopoietic neoplasm",
+                          name %in% cancer_pheno ~ "Cancer")) %>% 
+  mutate(group = replace(group, name %in% c("Other_malign_neoplasms", "All_malignant_neoplasms"), "Cancer")) %>% 
+  mutate(group = factor(group, levels = c("Hematopoietic neoplasm", "Cancer"))) %>% 
+  mutate(analysis = factor(analysis, levels = rev(c("CH", "CH_large", "CH_small", "DNMT3A", "TET2", "ASXL1", "JAK2", "SRSF2_SF3B1")))) %>% 
+  mutate(term =str_remove(term, "dis|cond"),
+         name = clean_title(name),
+         name = if_else(term != "", paste0(name, ":", term), name)) %>% 
+  mutate(name = case_when(name == "Hematopoietic neoplasms" ~ "Any neoplasm", 
+                          name == "MN" ~ "Myeloid neplasm",
+                          name == "LL" ~ "Lymphoid leukemia",
+                          name == "Other malign neoplasms" ~ "Non-hematopoietic neoplasm",
+                          name == "All malignant neoplasms" ~ "Malignant neoplasm",
+                          TRUE ~ name)) %>%
+  mutate(name = factor(name, levels = c("Any neoplasm", "Myeloid neplasm", 
+                                        "AML", "MDS", "MPN", "CMML", 
+                                        "Lymphoid leukemia",
+                                        "Malignant neoplasm",
+                                        "Non-hematopoietic neoplasm",
+                                        "Lung", "Lymphoma", "Kidney",
+                                        "Liver", "Pancreas",
+                                        "Stomach","Oesophageal",
+                                        "Smallintestine","Colorectal",
+                                        "Headneck", "Thyroid",
+                                        "Biliari",  "Bladder", 
+                                        "Uterine", "Breast", "Ovarian", "Prostate",
+                                        "Melanoma", "Sarcoma",
+                                        "Myeloma", "Brain",
+                                        "Myocardial infarction", "Stroke",
+                                        "Coronary artery disease", "Heart Failure", 
+                                        "Atrial Fibrillation", "Composite",
+                                        "Any cause", 
+                                        "Hematopoietic neoplasm", "Any malignant neoplasm",
+                                        "CVD-Composite"
+                                        )))  %>% 
+  group_by(name) %>% 
+  filter(group != "Cancer" | (group == "Cancer" & any(p_value <= 0.05, na.rm = T))) %>% 
+  ungroup()
+  
+
+  
+           
+ 
+
+# RColorBrewer::display.brewer.all()
+# rev(RColorBrewer::brewer.pal(11, "RdBu"))
+RB_palette <- c("#053061", "#2166AC", "#4393C3", "#92C5DE","#ffffff", "#F4A582", "#D6604D", "#B2182B", "#67001F")
+
+plots3b <- ggplot(dfs3b, aes(x=name, analysis)) +
+  geom_tile(aes(fill = logOR), color='grey') + 
+  scale_y_discrete(labels = rev(c("CH", "CH large", "CH small" ,"*DNMT3A*", "*TET2*", "*ASXL1*", "*JAK2*", "*SRSF2*<br>+*SF3B1*")),expand = c(0,0)) +
+  scale_fill_gradientn(colours =RB_palette,
+                       name="HR",
+                       limits = c(-3, 3),
+                       breaks = c(2.77, 2.08, 1.39, 0.69, 0, -0.69, -1.39, -2.08, -2.77),
+                       labels = c(">16","8", "4","2","1","0.5", "0.25", "0.125", "<0.0625")
+                       )+
+  theme_c2() + theme(
+    axis.title = element_blank(), 
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    axis.text.y = ggtext::element_markdown(size = 16),
+    axis.text.x = element_text(size = 16, angle = 45, vjust = 1, hjust = 1)
+  ) + 
+  geom_point(aes(size = size_sig), shape = "*") +
+  scale_size_continuous(range = c(4, 7), 
+                        limits = c(1.30103, 10), 
+                        breaks = c(1.30103, 3, 6, 10), 
+                        labels = c("0.05", "1e-03", "1e-06", "<1e-10"), 
+                        name="P-val") +
+  guides(fill = guide_colorbar(order = 1), size = guide_legend(order = 2)) +
+  
+  facet_grid(~ group, scales = "free_x", space = "free", drop=T)  +
+  theme(strip.text = element_text(size=16),
+        strip.background = element_blank()
+        )
+  
+
+plots3b
+
+```
+
+
+
+
+### C
+```{r}
+
+
+cvd_univ <- vroom("output/tables/results_crr_cvd.tsv") %>% 
+  janitor::clean_names() %>% 
+  #"univariate" "bivariate_age"      "bivariate_smoking"  "trivar_age_smoking"
+  filter(analysis == "CH") %>% 
+  mutate(name = case_when(name == "mi" ~ "Myocardial infarction",
+                          name == "stroke" ~ "Stroke",
+                          name == "stri" ~ "Ischaemic stroke",
+                          name == "cad" ~ "Coronary artery disease",
+                          name == "hf" ~ "Heart Failure",
+                          name == "af" ~ "Atrial Fibrillation",
+                          name == "composite" ~ "Composite")) %>% 
+  mutate(model = case_when(model == "univariate" ~ "Univariate",
+                           model == "bivariate_smoking" ~ "Bivariate: smoking",
+                           model == "bivariate_age" ~ "Bivariate: age",
+                           model == "trivar_age_smoking" ~ "Trivariate: age+smoking")) %>%
+  mutate(group = factor(model, levels = rev(c("Univariate", "Bivariate: smoking",
+                                    "Bivariate: age",  "Trivariate: age+smoking") ))) %>% 
+  group_by(group, analysis) %>% 
+  mutate(fdr = p.adjust(p_value)) %>% 
+  ungroup() %>% 
+  vroom_write("output/tables/results_crr_cvd_red.tsv") %>% 
+  drop_na() %>% 
+  forestplot_from_tidy(., "Hazard ratio", title = "CVD", 
+                       order=c("Myocardial infarction", "Stroke",
+                               "Ischaemic stroke",
+                               "Coronary artery disease",
+                               "Heart Failure", "Atrial Fibrillation", 
+                               "Composite"),
+                       group = T,
+                       min=0.7, max=2.4,
+                       table = F) +
+  scale_shape_manual(values=c(21, 22, 24, 23) #values=c(19, 15, 17, 18)
+                     )+
+  guides(shape=guide_legend(nrow=2, byrow=TRUE, reverse = TRUE))
+
+cvd_univ
+```
+
+### All
+
+```{r}
+
+r1 <- plot_grid(phewas,
+                labels = 'a', 
+                scale = .95)
+r1
+
+r2 <- plot_grid(plots3b, cvd_univ,
+                labels = c('b', 'c'), align = "h", axis = "tb",
+                rel_widths = c(1, .9),
+                scale = .95,  ncol=2)
+r2
+r <- plot_grid(r1, r2,
+                #align = "v", axis = "l",
+                rel_heights = c(1,1.2),
+                ncol=1)
+r
+
+ggsave("output/plots/figures/Ext_Fig3_rev.pdf", width = 18, height = 14)
+
+
+```
+
